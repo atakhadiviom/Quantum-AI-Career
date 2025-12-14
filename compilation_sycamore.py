@@ -564,46 +564,44 @@ def main():
         print("CPU Count: Unknown")
 
     # 1. Create a Random Deep Circuit
+    # Increased depth to ~6000 for "2 minute" stress test
     print("\n## 1. Create a Random Deep Circuit")
-    
-    # Use parameters that create a heavy enough workload
-    n_qubits = 10
-    depth = 400 # Deep circuit with MatrixGates
-    
+    n_qubits = 8 # 8 Qubits
     qubits = cirq.LineQubit.range(n_qubits)
+    depth = 6000 # Increased from 800 to 6000 for heavy load
+    
+    start_time = time.time()
     print("Generating circuit with random unitary gates...")
     original_circuit = generate_random_circuit(qubits, depth)
+    print(f"Generation Time: {time.time() - start_time:.4f} s")
     
     print(f"Original Circuit Depth: {len(original_circuit)}")
     print(f"Original Operation Count: {len(list(original_circuit.all_operations()))}")
-
+    
     # 2. Benchmark Sequential Decomposition
     print("\n## 2. Benchmark Sequential Decomposition (Apples-to-Apples)")
+    print("Running sequential baseline (this may take ~2 minutes)...")
+    start_time = time.time()
     
-    start_time = time.perf_counter()
+    # We run the sequential version to establish the baseline
     sequential_circuit = sequential_sycamore_decomposition(original_circuit)
-    sequential_time = time.perf_counter() - start_time
+    
+    sequential_time = time.time() - start_time
     print(f"Sequential Decomposition Time: {sequential_time:.4f} s")
     
-    # 3. Benchmark Parallel Implementation
-    print("\n## 3. Benchmark Parallel Implementation (Map-Reduce)")
-    
-    # Warmup the pool to simulate a long-running service / avoid startup cost
+    # 3. Benchmark Parallel Implementation (Pure JAX)
+    print("\n## 3. Benchmark Parallel Implementation (Pure JAX Pipeline)")
     print("Warming up process pool...")
-    pool = concurrent.futures.ProcessPoolExecutor()
-    # Submit dummy tasks to force worker creation and import loading
-    ops = list(original_circuit.all_operations())
-    dummy_tasks = ops[:min(16, len(ops))] 
-    # Use JAX wrapper for warmup too
-    list(pool.map(worker_decompose_operation_jax, dummy_tasks))
-    print("Warmup complete.")
     
-    start_time = time.perf_counter()
-    parallel_circuit = parallel_sycamore_compilation(original_circuit, executor=pool)
-    parallel_time = time.perf_counter() - start_time
+    # Warmup the pool/JAX (optional but good practice)
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        print("Warmup complete.")
+        
+        start_time = time.time()
+        parallel_circuit = parallel_sycamore_compilation(original_circuit, executor=executor)
+        parallel_time = time.time() - start_time
+        
     print(f"Parallel Compilation Time: {parallel_time:.4f} s")
-    
-    pool.shutdown()
     
     # 4. Analysis
     speedup = sequential_time / parallel_time
