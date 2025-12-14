@@ -237,13 +237,7 @@ def worker_decompose_operation(op):
 def jax_kak_interaction_coefficients(u):
     """
     Computes the KAK interaction coefficients (x, y, z) using JAX.
-    This replaces the heavy lifting of cirq.kak_decomposition.
-    
-    Args:
-        u: 4x4 Unitary matrix (numpy array)
-        
-    Returns:
-        tuple: (x, y, z) interaction coefficients
+    Deprecated: Use kak_utils.compute_kak_coords directly.
     """
     import jax
     import jax.numpy as jnp
@@ -255,61 +249,24 @@ def jax_kak_interaction_coefficients(u):
 
 def worker_decompose_batch_jax(batch_tuple):
     """
-    Batched JAX Worker.
-    Receives a list of (index, op) tuples.
-    Performs vectorized JAX computation and decomposition.
+    Deprecated: Replaced by single-process vectorization.
+    Kept for compatibility with potential external callers.
     """
     indices, ops = zip(*batch_tuple)
     import cirq
     import cirq_google
-    import numpy as np
-    import jax
-    import jax.numpy as jnp
     
-    # 1. Vectorized Unitary Extraction
-    # We need to handle potential failures or non-2-qubit gates gracefully
-    unitaries = []
-    valid_indices = []
-    
-    for i, op in enumerate(ops):
-        if len(op.qubits) == 2:
-            try:
-                u = cirq.unitary(op)
-                unitaries.append(u)
-                valid_indices.append(i)
-            except:
-                pass
-                
-    # 2. Vectorized JAX Computation (vmap)
-    import kak_utils
-    
-    # Vectorize it!
-    _compute_kak_coords_batch = jax.vmap(kak_utils.compute_kak_coords)
-    
-    if unitaries:
-        u_stack = jnp.array(np.stack(unitaries))
-        # This is the HPC Signal: Batched Matrix Math on CPU/GPU
-        coords_batch = _compute_kak_coords_batch(u_stack)
-        # Block until ready to ensure we measure the math time
-        _ = coords_batch.block_until_ready()
-        
-    # 3. Standard Decomposition (Sequential loop per batch)
-    # We still need to create the Cirq objects.
     gateset = cirq_google.SycamoreTargetGateset()
-    
     results = []
     for op in ops:
-        # Optimization: We could use the coords here if we had the synthesis logic.
         try:
             res = gateset.decompose_to_target_gateset(op, 0)
         except:
             res = [op]
-            
         if res is None:
             res = [op]
         if not isinstance(res, (list, tuple)):
             res = [res]
-            
         flat_ops = []
         for item in res:
             if isinstance(item, cirq.Moment):
@@ -317,7 +274,6 @@ def worker_decompose_batch_jax(batch_tuple):
             else:
                 flat_ops.append(item)
         results.append(flat_ops)
-        
     return indices, results
 
 def worker_pure_jax_pipeline(batch_data):
