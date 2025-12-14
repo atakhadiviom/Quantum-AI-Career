@@ -4,10 +4,13 @@ import numpy as np
 
 def compute_kak_coords(unitary):
     """
-    Computes the KAK interaction coefficients (x, y, z) for a 4x4 unitary using JAX.
-    Returns canonical coordinates in the Weyl chamber: pi/4 >= x >= y >= |z|.
+    Computes KAK interaction coefficients (x, y, z) using a robust JAX-compatible analytical method.
+    This avoids Python callbacks to Cirq, enabling full JIT/VMAP acceleration.
+    
+    The logic extracts the canonical coordinates from the spectra of the Magic Basis representation,
+    ensuring invariance to global phase and handling the Weyl chamber symmetries.
     """
-    # Magic Basis Matrix
+    # Magic Basis Matrix (normalized)
     inv_sqrt2 = 1.0 / jnp.sqrt(2.0)
     Q = jnp.array([
         [1, 0, 0, 1j],
@@ -16,138 +19,129 @@ def compute_kak_coords(unitary):
         [1, 0, 0, -1j]
     ], dtype=jnp.complex64) * inv_sqrt2
     
-    # Transform to magic basis
-    m = jnp.conj(Q).T @ unitary @ Q
+    # 1. Normalize to SU(4) to fix global phase (up to 4th root)
+    # This is crucial to distinguish gates like Identity (trace 4) vs SWAP (trace 4i).
+    det = jnp.linalg.det(unitary)
+    u_su4 = unitary * (det ** (-0.25))
     
-    # Compute gamma = m.T @ m
+    # 2. Magic Basis Transform
+    # m = Q^dag @ U @ Q
+    m = jnp.conj(Q).T @ u_su4 @ Q
+    
+    # 3. Gamma Matrix (m.T @ m)
+    # Eigenvalues of Gamma encode the interaction coefficients.
     gamma = m.T @ m
-    
-    # Eigenvalues of gamma
     eigvals = jnp.linalg.eigvals(gamma)
     
-    # Extract angles: -angle(eigvals) / 2
-    # The eigenvalues are exp(i * 2 * (hx, hy, hz, ...))
-    # So angles are hx, hy, hz...
-    angles = -jnp.angle(eigvals) / 2.0
+    # 4. Extract Angles (Robustly via Gap Detection)
+    phases = jnp.angle(eigvals)
+    phases = jnp.sort(phases)
     
-    # Map to canonical Weyl chamber
-    # 1. Take absolute values (mod pi/2 symmetries handled later, but start here)
-    # Actually, we need to find the combination (c1, c2, c3) such that 
-    # the 4 angles are (c1+c2-c3, c1-c2+c3, -c1+c2+c3, -c1-c2-c3) or similar permutations.
+    # Compute gaps between consecutive phases on the circle
+    gaps = jnp.concatenate([
+        phases[1:] - phases[:-1],
+        jnp.array([2*jnp.pi - (phases[-1] - phases[0])])
+    ])
     
-    # Robust approach for SU(4):
-    # The 4 angles are roughly (x-y+z, -x+y+z, -x-y+z, x+y-z) ? 
-    # Let's use the property that x, y, z are related to the eigenvalues.
-    # We sort them and apply modular arithmetic to get into the fundamental domain.
+    # Find the largest gap to place the branch cut
+    max_gap_idx = jnp.argmax(gaps)
     
-    # Simplified robust logic:
-    # 1. Sort angles modulo pi
-    angles = jnp.mod(angles, jnp.pi)
+    # Calculate the center of the largest gap
+    p1 = phases[max_gap_idx]
+    p2_idx = (max_gap_idx + 1) % 4
+    p2 = phases[p2_idx]
+    is_wrap_gap = max_gap_idx == 3
     
-    # 2. We want to extract x, y, z from these 4 values.
-    # The relationship is non-trivial because of the order of eigenvalues.
-    # However, for a generic unitary, we can try to enforce the chamber.
+    gap_center = jnp.where(is_wrap_gap,
+                           (p1 + p2 + 2*jnp.pi) / 2.0,
+                           (p1 + p2) / 2.0)
+                           
+    # Rotate spectrum so gap center aligns with pi
+    shift = jnp.pi - gap_center
+    eigvals_aligned = eigvals * jnp.exp(1j * shift)
     
-    # Let's use the logic that x, y, z are the "interaction strengths".
-    # We can just take the sorted absolute values as a first pass, 
-    # but strictly we should apply the Weyl group symmetries.
+    # Extract angles (continuous)
+    base_angles = -jnp.angle(eigvals_aligned) / 2.0 + shift / 2.0
     
-    # Reference algorithm (e.g. from Cirq or Tucci):
-    # 1. Calculate h = angles
-    # 2. Convert to x, y, z candidates
-    #    x = (h1 + h2) / 2
-    #    y = (h1 - h2) / 2 ...
+    # 5. Compute Coordinates
+    v = jnp.sort(base_angles)
     
-    # A reliable heuristic for JAX (differentiable-ish):
-    # Just return sorted absolute values in [0, pi/4] range?
-    # The max entanglement is pi/4.
+    x = (v[3] + v[2]) / 2.0
+    y = (v[3] + v[1]) / 2.0
+    z = (v[2] + v[1]) / 2.0
     
-    # Let's stick to the previous simple sorting but enforce the range [0, pi/4] properly.
-    # Canonical: pi/4 >= x >= y >= |z|
+    coords = jnp.array([x, y, z])
     
-    # Map to [0, pi]
-    u_angles = jnp.mod(angles, jnp.pi)
+    # 6. Fold into Weyl Chamber
+    # The Weyl chamber is symmetric under shifts of pi/2 for each coordinate.
+    # We map x, y, z into [0, pi/4] by folding.
+    # Formula: abs( (val - pi/4) % (pi/2) - pi/4 )
+    # This maps 0->0, pi/4->pi/4, pi/2->0, 3pi/4->pi/4, etc.
     
-    # Map to [0, pi/2]
-    # If > pi/2, reflect: pi - angle
-    u_angles = jnp.minimum(u_angles, jnp.pi - u_angles)
+    coords = jnp.abs((coords - jnp.pi/4) % (jnp.pi/2) - jnp.pi/4)
     
-    # Sort
-    u_angles = jnp.sort(u_angles)
-    
-    # Extract 3 largest (usually the first one is close to 0 if 4th is small?)
-    # Actually there are 4 values. 
-    # For SU(4), sum is 0 mod 2pi.
-    
-    # Let's just take the top 3 and sort them.
-    # This is an approximation but better than raw.
-    res = u_angles[1:] # Take top 3? No, let's take all 4 then process.
-    
-    # Better: Just take the 3 largest absolute values
-    # x, y, z correspond to the interaction coefficients.
-    
-    # Let's refine the sorting to match Weyl chamber:
-    # x is the largest interaction.
-    
-    # Taking the 3 largest values from the 4 angles (modulo symmetries)
-    # is a reasonable proxy for (x, y, z) for initialization.
-    # We ensure x >= y >= z
-    
-    coords = u_angles[:3] # Just take 3
-    coords = jnp.sort(coords)[::-1] # Descending: x, y, z
-    
-    # Enforce Weyl chamber condition roughly: x >= y >= z
-    # And x <= pi/4? 
-    # If we have interactions > pi/4, they wrap around.
+    # Sort descending x >= y >= z
+    coords = jnp.sort(coords)[::-1]
     
     return coords
 
-def get_sycamore_initial_params(kak_coords):
+def kak_coords_batch(unitaries):
+    """Batch version of compute_kak_coords."""
+    return jax.vmap(compute_kak_coords)(unitaries)
+
+def classify_gate_type(kak_coords, atol=1e-3):
     """
-    Generates initial parameters for the 2-Sycamore ansatz based on KAK coordinates.
+    Classifies the gate type based on KAK coordinates.
     
     Args:
         kak_coords: (3,) array of interaction coefficients (x, y, z)
+        atol: Absolute tolerance for comparison
         
     Returns:
-        params: (4, 2, 3) array of parameters for the circuit
+        str: 'identity', 'cnot', 'swap', 'iswap', or 'generic'
     """
-    # 1. Define Anchor Points (Params for known gates)
+    # Ensure coords are positive for classification
+    coords = jnp.abs(kak_coords)
     
-    # Anchor A: Identity (Coords ~ [0, 0, 0])
-    # Params: All zeros (simplest identity)
-    params_id = jnp.zeros((4, 2, 3))
+    if jnp.all(coords < atol):
+        return 'identity'
+        
+    # CNOT: (pi/4, 0, 0)
+    if jnp.abs(coords[0] - jnp.pi/4) < atol and coords[1] < atol and coords[2] < atol:
+        return 'cnot'
+        
+    # SWAP: (pi/4, pi/4, pi/4)
+    if jnp.all(jnp.abs(coords - jnp.pi/4) < atol):
+        return 'swap'
+        
+    # iSWAP: (pi/4, pi/4, 0)
+    if jnp.abs(coords[0] - jnp.pi/4) < atol and jnp.abs(coords[1] - jnp.pi/4) < atol and coords[2] < atol:
+        return 'iswap'
+        
+    return 'generic'
+
+def get_sycamore_initial_params(coords):
+    """
+    Returns initial parameters for the Sycamore ansatz based on KAK coords.
+    This serves as a seed for VQE or a direct solution for known gates.
+    """
+    # Params shape: (4, 2, 3)
     
-    # Anchor B: CNOT (Coords ~ [0.5, 0, 0])
-    # Params: Known solution for CNOT from calibration
-    params_cnot = jnp.array([
-        [[-1.5000015497207642, -4.514768123626709, 8.685406684875488], [1.3594839572906494, -3.1223084926605225, -3.377347469329834]],
-        [[-2.542282819747925, 4.467097282409668, -5.550124645233154], [-3.3176305294036865, 1.656246304512024, -0.41269636154174805]],
-        [[0.37855178117752075, 1.1851909160614014, -5.839783191680908], [2.4382376670837402, -3.1886086463928223, -4.698708534240723]],
-        [[1.7741163969039917, 1.622654676437378, -0.8158003687858582], [-5.968489646911621, 0.7379252910614014, 1.262075424194336]],
-    ])
+    # Hardcoded CNOT params (found via optimization)
+    cnot_params = jnp.array([
+        [[1.5007599592208862, 2.0785629749298096, -0.4461745321750641], 
+         [-0.17979516088962555, 0.09397346526384354, -0.40404394268989563]], 
+        [[-0.37198543548583984, 0.4811127781867981, 0.6105138063430786], 
+         [-1.5597529411315918, 2.2263600826263428, -1.9548892974853516]], 
+        [[0.7979231476783752, -0.020915437489748, 1.1834030151367188], 
+         [1.469095230102539, 0.7153650522232056, 0.46262872219085693]], 
+        [[0.19084732234477997, -1.5133144855499268, -1.2263277769088745], 
+         [1.997868537902832, -0.07750305533409119, 0.9836772680282593]]
+    ], dtype=jnp.float32)
+
+    # Simple logic:
+    # If small coords (Identity-like) -> zeros
+    # Else -> CNOT params (as a generic good seed)
+    is_small = jnp.all(coords < 0.1)
     
-    # Anchor C: iSWAP (Coords ~ [0.5, 0.5, 0])
-    # Sycamore is close to iSWAP.
-    # 2 Sycamores can make iSWAP easily?
-    # Let's assume params_cnot is a good start for high-entangling gates.
-    
-    # 2. Heuristic Selection
-    # Calculate distance to anchors
-    # We focus on the "strength" of entanglement which is roughly norm(coords)
-    
-    interaction_strength = jnp.linalg.norm(kak_coords)
-    
-    # If strength is low, start close to Identity.
-    # If strength is high, start close to CNOT.
-    
-    # Simple linear interpolation based on strength
-    # Max strength for CNOT is 0.5 (x=0.5). 
-    # Normalized weight:
-    w = jnp.clip(interaction_strength / 0.5, 0.0, 1.0)
-    
-    # Interpolate parameters
-    # This is a naive "homotopy" initialization
-    init_params = (1.0 - w) * params_id + w * params_cnot
-    
-    return init_params
+    return jnp.where(is_small, jnp.zeros((4, 2, 3), dtype=jnp.float32), cnot_params)

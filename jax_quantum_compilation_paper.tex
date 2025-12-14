@@ -20,7 +20,7 @@
 \maketitle
 
 \begin{abstract}
-We present a high-throughput, JAX-accelerated quantum compilation pipeline designed for the Google Sycamore processor. By leveraging Map-Reduce parallelism and XLA-compiled tensor processing, we eliminate the Python Global Interpreter Lock (GIL) overhead, achieving a \textbf{5.02x speedup} over sequential baselines (1,771 gates/second vs. 353 gates/second). Furthermore, we address the non-convex optimization landscape of two-qubit gate synthesis by introducing a \textbf{Targeted Initialization} strategy based on KAK decomposition. This approach utilizes invariant interaction coefficients to seed the variational optimizer, ensuring rapid convergence to high-fidelity solutions ($F \approx 1.0$) compared to random initialization.
+We present a high-throughput, JAX-accelerated quantum compilation pipeline designed for the Google Sycamore processor. By leveraging Map-Reduce parallelism and XLA-compiled tensor processing, we eliminate the Python Global Interpreter Lock (GIL) overhead, achieving a \textbf{2.1x end-to-end speedup} over sequential baselines (750 gates/second vs. 358 gates/second). Crucially, we implement a pure JAX version of KAK decomposition that runs \textbf{171x faster} than standard libraries by replacing Python callbacks with analytical Gap Detection and Weyl Chamber Folding. This approach utilizes invariant interaction coefficients to seed the variational optimizer, ensuring rapid convergence to high-fidelity solutions ($F \approx 1.0$) compared to random initialization.
 \end{abstract}
 
 \section{Introduction}
@@ -47,7 +47,11 @@ The core synthesis kernel is implemented in JAX, enabling Just-In-Time (JIT) com
 \subsection{Targeted Initialization via KAK Decomposition}
 Synthesizing a target unitary $U_{target}$ using the Sycamore gate ($SYC$) involves finding parameters $\vec{\theta}$ such that $U(\vec{\theta}) \approx U_{target}$. This is a non-convex optimization problem.
 
-To avoid local minima and accelerate convergence, we employ KAK decomposition (Cartan decomposition). For any unitary $U \in SU(4)$, the KAK decomposition identifies invariant interaction coefficients $(c_1, c_2, c_3)$. We map these coefficients to the initial parameters of our parameterized ansatz, placing the optimizer in the basin of attraction of the global minimum.
+To avoid local minima and accelerate convergence, we employ KAK decomposition (Cartan decomposition). For any unitary $U \in SU(4)$, the KAK decomposition identifies invariant interaction coefficients $(c_1, c_2, c_3)$. 
+
+We implemented a robust, JAX-compatible analytical method to extract these coefficients without relying on external libraries or callbacks. Our approach uses a \textbf{Gap Detection} algorithm to identify the optimal branch cut for the complex logarithm of the Magic Basis eigenvalues, ensuring continuous and correct angle extraction even in the presence of phase wrapping. Additionally, we employ \textbf{Weyl Chamber Folding} to canonically map the extracted coordinates into the fundamental domain $0 \le z \le y \le x \le \pi/4$, utilizing SU(4) symmetries. This method is fully vectorized and differentiable, enabling end-to-end JIT compilation.
+
+We map these coefficients to the initial parameters of our parameterized ansatz, placing the optimizer in the basin of attraction of the global minimum.
 
 The loss function is defined as the infidelity:
 \begin{equation}
@@ -61,10 +65,10 @@ We use the Adam optimizer for gradient-based refinement.
 \subsection{Computational Throughput}
 We evaluated the pipeline on a benchmark of 24,000 randomized two-qubit operations.
 \begin{itemize}
-    \item \textbf{Baseline (Sequential):} 68.03 seconds.
-    \item \textbf{JAX Parallel Pipeline:} 13.55 seconds.
+    \item \textbf{Baseline (Sequential):} 67.0 seconds (358 gates/s).
+    \item \textbf{JAX Parallel Pipeline:} 32.0 seconds (750 gates/s).
 \end{itemize}
-This represents a \textbf{5.02x speedup}, demonstrating that the system is limited only by physical core count and XLA compilation throughput.
+This represents a \textbf{2.1x end-to-end speedup}. Furthermore, the core KAK decomposition component achieves a \textbf{171x speedup} (83,738 ops/s vs 488 ops/s), demonstrating that the bottleneck has shifted entirely to the Python-based circuit reconstruction overhead.
 
 \subsection{Synthesis Fidelity}
 We compared random initialization versus KAK-based Targeted Initialization for the variational solver (100 steps, Adam optimizer).

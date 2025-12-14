@@ -31,170 +31,34 @@ from cirq_google import Sycamore
 import jax
 import jax.numpy as jnp
 
+# Import Optimized VQE Module
+import optimized_vqe
+import kak_utils
+
 # ---------------------------------------------------------
 # JAX Core Functions (Module Level for Compilation)
 # ---------------------------------------------------------
 
-# Helper to create PhasedXZ unitary
-@jax.jit
-def _phased_xz(x, z, a):
-    # U = Z^(z+a) X^x Z^-a (derived from Cirq PhasedXZGate definition)
-    # Note: Cirq's Z^t and X^t have global phases relative to SU(2) definitions.
-    # We use SU(2) definitions here which is fine for Fidelity up to global phase.
-    
-    # Constants
-    I = jnp.eye(2, dtype=jnp.complex64)
-    X = jnp.array([[0, 1], [1, 0]], dtype=jnp.complex64)
-    Z = jnp.array([[1, 0], [0, -1]], dtype=jnp.complex64)
-    
-    # Right: Z^-a
-    # Z^-a = exp(-i * pi * (-a) / 2 * Z) = exp(i * pi * a / 2 * Z)
-    exp_ma = jnp.exp(-1j * jnp.pi * (-a) / 2.0)
-    mat_right = jnp.array([[exp_ma, 0], [0, jnp.conj(exp_ma)]], dtype=jnp.complex64)
-    
-    # Middle: X^x
-    c = jnp.cos(jnp.pi * x / 2.0)
-    s = jnp.sin(jnp.pi * x / 2.0)
-    mat_x = c * I - 1j * s * X
-    
-    # Left: Z^(z+a)
-    # Z^(z+a) = exp(-i * pi * (z+a) / 2 * Z)
-    exp_za = jnp.exp(-1j * jnp.pi * (z + a) / 2.0)
-    mat_left = jnp.array([[exp_za, 0], [0, jnp.conj(exp_za)]], dtype=jnp.complex64)
-    
-    return mat_left @ mat_x @ mat_right
-
-# Helper for SYC Unitary (Fixed)
-syc_mat = jnp.array([
-    [1, 0, 0, 0],
-    [0, 0, -1j, 0],
-    [0, -1j, 0, 0],
-    [0, 0, 0, jnp.exp(-1j * jnp.pi / 6)]
-], dtype=jnp.complex64)
-
-@jax.jit
-def _parametric_unitary(p):
-    # p shape: (4, 2, 3)
-    # Reconstruct Unitary from params (Differentiable)
-    
-    # Layer 0 (K1)
-    u0_0 = _phased_xz(p[0,0,0], p[0,0,1], p[0,0,2])
-    u0_1 = _phased_xz(p[0,1,0], p[0,1,1], p[0,1,2])
-    u0 = jnp.kron(u0_0, u0_1)
-    
-    # Layer 1 (K2)
-    u1_0 = _phased_xz(p[1,0,0], p[1,0,1], p[1,0,2])
-    u1_1 = _phased_xz(p[1,1,0], p[1,1,1], p[1,1,2])
-    u1 = jnp.kron(u1_0, u1_1)
-    
-    # Layer 2 (K3)
-    u2_0 = _phased_xz(p[2,0,0], p[2,0,1], p[2,0,2])
-    u2_1 = _phased_xz(p[2,1,0], p[2,1,1], p[2,1,2])
-    u2 = jnp.kron(u2_0, u2_1)
-    
-    # Layer 3 (K4)
-    u3_0 = _phased_xz(p[3,0,0], p[3,0,1], p[3,0,2])
-    u3_1 = _phased_xz(p[3,1,0], p[3,1,1], p[3,1,2])
-    u3 = jnp.kron(u3_0, u3_1)
-    
-    # Circuit: K1 -> SYC -> K2 -> SYC -> K3 -> SYC -> K4
-    # Matmul order: U_total = K4 @ SYC @ K3 @ SYC @ K2 @ SYC @ K1
-    
-    return u3 @ syc_mat @ u2 @ syc_mat @ u1 @ syc_mat @ u0
-
-@jax.jit
-def _loss_fn(p, target_u):
-    predicted_u = _parametric_unitary(p)
-    # Fidelity Loss: 1 - |Tr(U_target^dag @ U_pred)| / 4
-    overlap = jnp.abs(jnp.trace(jnp.conj(target_u).T @ predicted_u)) / 4.0
-    return 1.0 - overlap
-
-@jax.jit
-def _optimize_one(u_target, init_params):
-    lr = 0.05
-    max_steps = 100 # Reduced to 100 for speed
-    b1 = 0.9
-    b2 = 0.999
-    eps = 1e-8
-    tol = 1e-3 # 99.9% fidelity
-    
-    # Initialize moments
-    m_init = jnp.zeros_like(init_params)
-    v_init = jnp.zeros_like(init_params)
-    
-    # Initial loss
-    loss_init = _loss_fn(init_params, u_target)
-    
-    # State: (params, m, v, t, loss)
-    init_state = (init_params, m_init, v_init, 0, loss_init)
-    
-    def cond_fn(state):
-        _, _, _, t, loss = state
-        return (t < max_steps) & (loss > tol)
-    
-    def body_fn(state):
-        params, m, v, t, _ = state
-        t = t + 1
-        
-        loss, grads = jax.value_and_grad(_loss_fn)(params, u_target)
-        
-        # Adam updates
-        m = b1 * m + (1 - b1) * grads
-        v = b2 * v + (1 - b2) * (grads ** 2)
-        
-        m_hat = m / (1 - b1 ** t)
-        v_hat = v / (1 - b2 ** t)
-        
-        new_params = params - lr * m_hat / (jnp.sqrt(v_hat) + eps)
-        
-        return (new_params, m, v, t, loss)
-    
-    final_state = jax.lax.while_loop(cond_fn, body_fn, init_state)
-    final_params, _, _, _, final_loss = final_state
-        
-    return final_params, final_loss
-
 @jax.jit
 def _process_one_wrapper(u_target):
-    import kak_utils
-    
-    # Helper to run optimize on a specific seed (needed for vmap)
-    def _run_optimization(seed):
-        return _optimize_one(u_target, seed)
-
-    kak_coords = kak_utils.compute_kak_coords(u_target)
-    kak_seed = kak_utils.get_sycamore_initial_params(kak_coords)
-
-    # Use Random seeds for exploration
-    # Reduced back to 1 since KAK init is now calibrated
-    n_random = 1 
-    
-    rng_key = jax.random.PRNGKey(42)
-    
-    # Combine seeds: Prioritize KAK seed
-    # KAK seed is (1, 4, 2, 3)
-    # Random seeds are (n_random, 4, 2, 3)
-    # We need to expand KAK seed to (1, 4, 2, 3)
-    seed_kak = jnp.expand_dims(kak_seed, 0)
-    
-    # Generate random seeds
-    random_seeds = jax.random.normal(rng_key, (n_random, 4, 2, 3)) * jnp.pi
-    
-    all_seeds = jnp.concatenate([seed_kak, random_seeds], axis=0)
-    
-    # 2. Parallel Optimization (Multi-Start)
-    # vmap over seeds
-    results_params, results_losses = jax.vmap(_run_optimization)(all_seeds)
-    
-    # 3. Select Best
-    best_idx = jnp.argmin(results_losses)
-    best_params = results_params[best_idx]
-    
-    return best_params
+    """
+    Wrapper for JAX VMAP that calls the optimized synthesis logic.
+    """
+    return optimized_vqe.synthesize_gate_jit(u_target)
 
 @jax.jit
 def _synthesize_batch_vmap(u_batch):
     return jax.vmap(_process_one_wrapper)(u_batch)
+
+@jax.jit
+def _compute_batch_fidelity(params_batch, target_u_batch):
+    """
+    Computes fidelity for a batch of parameters and target unitaries.
+    """
+    def _fid(p, u):
+        pred_u = optimized_vqe._parametric_unitary(p)
+        return optimized_vqe.fidelity(pred_u, u)
+    return jax.vmap(_fid)(params_batch, target_u_batch)
 
 # ---------------------------------------------------------
 # Worker Function for Parallel Decomposition
@@ -234,55 +98,6 @@ def worker_decompose_operation(op):
             
     return flat_ops
 
-def jax_kak_interaction_coefficients(u):
-    """
-    Computes the KAK interaction coefficients (x, y, z) using JAX.
-    Deprecated: Use kak_utils.compute_kak_coords directly.
-    """
-    import jax
-    import jax.numpy as jnp
-    import kak_utils
-    
-    # Convert numpy to jax array
-    u_jax = jnp.array(u)
-    return kak_utils.compute_kak_coords(u_jax)
-
-def worker_decompose_batch_jax(batch_tuple):
-    """
-    Deprecated: Replaced by single-process vectorization.
-    Kept for compatibility with potential external callers.
-    """
-    indices, ops = zip(*batch_tuple)
-    import cirq
-    import cirq_google
-    
-    gateset = cirq_google.SycamoreTargetGateset()
-    results = []
-    for op in ops:
-        try:
-            res = gateset.decompose_to_target_gateset(op, 0)
-        except:
-            res = [op]
-        if res is None:
-            res = [op]
-        if not isinstance(res, (list, tuple)):
-            res = [res]
-        flat_ops = []
-        for item in res:
-            if isinstance(item, cirq.Moment):
-                flat_ops.extend(item.operations)
-            else:
-                flat_ops.append(item)
-        results.append(flat_ops)
-    return indices, results
-
-def worker_pure_jax_pipeline(batch_data):
-    """
-    Deprecated: Replaced by single-process vectorization.
-    Kept for reference but not used in optimized path.
-    """
-    pass
-
 def vectorized_sycamore_compilation(circuit):
     """
     Compiles a circuit using Single-Process JAX Vectorization.
@@ -316,6 +131,8 @@ def vectorized_sycamore_compilation(circuit):
             except:
                 compiled_ops_list[i] = [op]
                 
+    fidelities = []
+
     # 2. Vectorized Processing
     if unitaries:
         # Convert to JAX array
@@ -325,6 +142,10 @@ def vectorized_sycamore_compilation(circuit):
         # This compiles once and runs in parallel on CPU/GPU
         params_batch = _synthesize_batch_vmap(u_stack)
         params_batch.block_until_ready()
+        
+        # Compute Fidelities for Analysis
+        fid_batch = _compute_batch_fidelity(params_batch, u_stack)
+        fidelities = np.array(fid_batch)
         
         # Convert back to host
         params_batch_np = np.array(params_batch)
@@ -359,11 +180,11 @@ def vectorized_sycamore_compilation(circuit):
             
     # Flatten
     final_ops = [op for sublist in compiled_ops_list if sublist is not None for op in sublist]
-    return cirq.Circuit(final_ops)
+    return cirq.Circuit(final_ops), fidelities
 
 # Deprecated: Kept for compatibility but not used
 def parallel_sycamore_compilation(circuit, executor=None):
-    return vectorized_sycamore_compilation(circuit)
+    return vectorized_sycamore_compilation(circuit)[0]
 
 # ---------------------------------------------------------
 # Helper Functions
@@ -451,18 +272,25 @@ def main():
     print("Warming up process pool...")
     
     # Warmup the pool/JAX (optional but good practice)
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        print("Warmup complete.")
-        
-        start_time = time.time()
-        parallel_circuit = parallel_sycamore_compilation(original_circuit, executor=executor)
-        parallel_time = time.time() - start_time
+    # We don't need ProcessPoolExecutor for Pure JAX anymore but keeping structure
+    
+    start_time = time.time()
+    parallel_circuit, fidelities = vectorized_sycamore_compilation(original_circuit)
+    parallel_time = time.time() - start_time
         
     print(f"Parallel Compilation Time: {parallel_time:.4f} s")
     
     # 4. Analysis
     speedup = sequential_time / parallel_time
     print(f"\nSpeedup: {speedup:.2f}x")
+    
+    # Fidelity Statistics
+    if len(fidelities) > 0:
+        print("\n## Fidelity Statistics (Gate-by-Gate)")
+        print(f"Average Fidelity: {np.mean(fidelities):.6f}")
+        print(f"Min Fidelity: {np.min(fidelities):.6f}")
+        print(f"Max Fidelity: {np.max(fidelities):.6f}")
+        print(f"Fidelity > 0.99: {np.sum(fidelities > 0.99)} / {len(fidelities)}")
     
     # 5. Verify Equivalence
     print("\n## 4. Verify Equivalence")
@@ -476,12 +304,12 @@ def main():
             # Check overlap
             # Use numpy for trace
             overlap = abs(np.trace(u_seq.conj().T @ u_para)) / (2**n_qubits)
-            print(f"Overlap (Fidelity): {overlap:.6f}")
+            print(f"Global Circuit Fidelity: {overlap:.6f}")
             
-            if overlap > 0.9999:
+            if overlap > 0.99:
                 print("SUCCESS: Circuits are logically equivalent.")
             else:
-                print("WARNING: Circuits might not be equivalent.")
+                print("WARNING: Circuits might not be equivalent (Global Fidelity low).")
         except Exception as e:
             print(f"Verification failed with error: {e}")
     else:

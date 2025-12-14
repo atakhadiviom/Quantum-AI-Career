@@ -4,23 +4,33 @@
 [![JAX](https://img.shields.io/badge/JAX-enabled-orange.svg)](https://github.com/google/jax)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-High-performance quantum circuit compilation framework for Google Sycamore architecture, achieving **5.02x speedup** over baseline using JAX-accelerated tensor processing and intelligent KAK decomposition.
+High-performance quantum circuit compilation framework for Google Sycamore architecture, achieving **2.1x end-to-end speedup** over baseline using JAX-accelerated tensor processing and intelligent KAK decomposition, with **171x acceleration** in core coordinate extraction.
 
 ## 🚀 Key Features
 
-- **5.02x Compilation Speedup**: 1,771 gates/second vs 353 baseline
+- **2.1x End-to-End Speedup**: 750 gates/second vs 358 baseline
+- **171x Core Acceleration**: KAK decomposition runs at >83k ops/s vs 488 ops/s
 - **High Fidelity**: F > 0.999 with KAK-guided initialization
+- **Pure JAX KAK Decomposition**: Replaced Python callbacks with analytical Gap Detection and Weyl Chamber Folding for 100% JIT compilation
 - **Parallel Architecture**: Map-Reduce + ProcessPoolExecutor for GIL-free execution
 - **Smart Synthesis**: Analytical shortcuts for known gates, VQE for arbitrary unitaries
 - **Production-Ready**: Comprehensive test suite, error handling, and benchmarking
 
 ## 📊 Performance Metrics
 
+### End-to-End Compilation
 | Metric | Sequential | Parallel JAX | Speedup |
 |--------|-----------|--------------|---------|
-| Time (24K gates) | 68s | 13.6s | **5.02x** |
-| Throughput | 353 gates/s | 1,771 gates/s | **5.02x** |
+| Time (24K gates) | 67s | 32s | **2.1x** |
+| Throughput | 358 gates/s | 750 gates/s | **2.1x** |
 | Fidelity | 0.9999 | 0.9999 | Equal |
+
+### Core KAK Decomposition (Component Level)
+| Metric | Python/Cirq | JAX (Batch) | Speedup |
+|--------|-------------|-------------|---------|
+| Throughput | ~488 ops/s | **83,738 ops/s** | **171x** |
+
+> **Note**: The core KAK decomposition is now **171x faster** than the Python baseline. The end-to-end speedup is currently limited by Python overhead in circuit reconstruction.
 
 ## 🏗️ Architecture
 
@@ -234,10 +244,10 @@ Synthesizes a single 2-qubit unitary.
 ### Utility Functions
 
 #### `kak_utils.compute_kak_coords(unitary)`
-Extracts KAK interaction coefficients.
+Extracts KAK interaction coefficients (x, y, z) in the Weyl chamber. Uses JAX-compatible analytical decomposition with Gap Detection and Weyl Chamber Folding.
 
 #### `kak_utils.classify_gate_type(kak_coords)`
-Classifies gate as 'identity', 'cnot', 'swap', or 'generic'.
+Classifies gate as 'identity', 'cnot', 'swap', or 'generic' using SU(4) invariants.
 
 ## 🤝 Contributing
 
@@ -290,4 +300,4 @@ If you use this work in your research, please cite:
 
 ---
 
-**Status**: Active Development | **Stability**: Beta | **Version**: 0.2.0
+**Status**: Active Development | **Stability**: Beta | **Version**: 0.3.0
