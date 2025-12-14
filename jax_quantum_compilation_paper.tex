@@ -20,7 +20,7 @@
 \maketitle
 
 \begin{abstract}
-We present a high-throughput, JAX-accelerated quantum compilation pipeline designed for the Google Sycamore processor. By leveraging Map-Reduce parallelism and XLA-compiled tensor processing, we eliminate the Python Global Interpreter Lock (GIL) overhead, achieving a \textbf{27.1x speedup} over sequential baselines (9,400 gates/second vs. 350 gates/second). Furthermore, we address the non-convex optimization landscape of two-qubit gate synthesis by introducing a \textbf{Targeted Initialization} strategy based on KAK decomposition. This approach utilizes invariant interaction coefficients to seed the variational optimizer, ensuring rapid convergence to high-fidelity solutions ($F \approx 1.0$) compared to random initialization.
+We present a high-throughput, JAX-accelerated quantum compilation pipeline designed for the Google Sycamore processor. By leveraging Map-Reduce parallelism and XLA-compiled tensor processing, we eliminate the Python Global Interpreter Lock (GIL) overhead, achieving a \textbf{5.02x speedup} over sequential baselines (1,771 gates/second vs. 353 gates/second). Furthermore, we address the non-convex optimization landscape of two-qubit gate synthesis by introducing a \textbf{Targeted Initialization} strategy based on KAK decomposition. This approach utilizes invariant interaction coefficients to seed the variational optimizer, ensuring rapid convergence to high-fidelity solutions ($F \approx 1.0$) compared to random initialization.
 \end{abstract}
 
 \section{Introduction}
@@ -59,15 +59,15 @@ We use the Adam optimizer for gradient-based refinement.
 \section{Results}
 
 \subsection{Computational Throughput}
-We evaluated the pipeline on a benchmark of 72,000 randomized two-qubit operations.
+We evaluated the pipeline on a benchmark of 24,000 randomized two-qubit operations.
 \begin{itemize}
-    \item \textbf{Baseline (Sequential):} $\sim$206 seconds.
-    \item \textbf{JAX Parallel Pipeline:} 7.62 seconds.
+    \item \textbf{Baseline (Sequential):} 68.03 seconds.
+    \item \textbf{JAX Parallel Pipeline:} 13.55 seconds.
 \end{itemize}
-This represents a \textbf{27.1x speedup}, demonstrating that the system is limited only by physical core count and XLA compilation throughput.
+This represents a \textbf{5.02x speedup}, demonstrating that the system is limited only by physical core count and XLA compilation throughput.
 
 \subsection{Synthesis Fidelity}
-We compared random initialization versus KAK-based Targeted Initialization for the variational solver (500 steps, Adam optimizer).
+We compared random initialization versus KAK-based Targeted Initialization for the variational solver (100 steps, Adam optimizer).
 \begin{itemize}
     \item \textbf{Random Initialization:} Converges to $F \approx 1.0$ but requires more iterations to escape local minima plateaus.
     \item \textbf{KAK Initialization:} Starts with significantly lower loss and converges rapidly to near-perfect fidelity ($F > 0.999$), validating the efficacy of topological coordinate extraction.

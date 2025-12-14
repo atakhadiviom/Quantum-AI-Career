@@ -4,11 +4,11 @@
 [![JAX](https://img.shields.io/badge/JAX-enabled-orange.svg)](https://github.com/google/jax)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-High-performance quantum circuit compilation framework for Google Sycamore architecture, achieving **27.1x speedup** over baseline using JAX-accelerated tensor processing and intelligent KAK decomposition.
+High-performance quantum circuit compilation framework for Google Sycamore architecture, achieving **5.02x speedup** over baseline using JAX-accelerated tensor processing and intelligent KAK decomposition.
 
 ## 🚀 Key Features
 
-- **27.1x Compilation Speedup**: 9,400 gates/second vs 350 baseline
+- **5.02x Compilation Speedup**: 1,771 gates/second vs 353 baseline
 - **High Fidelity**: F > 0.999 with KAK-guided initialization
 - **Parallel Architecture**: Map-Reduce + ProcessPoolExecutor for GIL-free execution
 - **Smart Synthesis**: Analytical shortcuts for known gates, VQE for arbitrary unitaries
@@ -18,8 +18,8 @@ High-performance quantum circuit compilation framework for Google Sycamore archi
 
 | Metric | Sequential | Parallel JAX | Speedup |
 |--------|-----------|--------------|---------|
-| Time (72K gates) | 206s | 7.62s | **27.1x** |
-| Throughput | 350 gates/s | 9,400 gates/s | **26.9x** |
+| Time (24K gates) | 68s | 13.6s | **5.02x** |
+| Throughput | 353 gates/s | 1,771 gates/s | **5.02x** |
 | Fidelity | 0.9999 | 0.9999 | Equal |
 
 ## 🏗️ Architecture
