@@ -79,69 +79,11 @@ def jax_kak_interaction_coefficients(u):
     """
     import jax
     import jax.numpy as jnp
+    import kak_utils
     
-    # Define the core math as a JIT-compiled function
-    @jax.jit
-    def _compute_kak_coords(unitary):
-        # Magic Basis Transformation Matrix
-        # B = [[1, 1j, 0, 0], [0, 0, 1j, 1], [0, 0, 1j, -1], [1, -1j, 0, 0]] / sqrt(2)
-        # We can construct it directly or use hardcoded values for speed
-        
-        # More efficient: Compute M = B.dag * U * B
-        # But we need the interaction part specifically.
-        # Standard Algorithm:
-        # 1. Map to Magic Basis: m = Q.conj().T @ unitary @ Q
-        #    Where Q is the Magic Basis change matrix.
-        # 2. Compute symmetric part: s = det(m)**(-0.25) * m
-        # 3. K = s.T @ s
-        # 4. Eigenvalues of K are exp(2i(hx, hy, hz)) etc.
-        # 5. Extract x, y, z from phases.
-        
-        # Magic Basis Matrix (Standard definition)
-        inv_sqrt2 = 1.0 / jnp.sqrt(2.0)
-        # Columns of Q: |XX>, |YY>, |ZZ>, |I> roughly? 
-        # Cirq's definition: 
-        # 1/sqrt(2) * [1 0 0 i]
-        # 1/sqrt(2) * [0 i 1 0]
-        # 1/sqrt(2) * [0 i -1 0]
-        # 1/sqrt(2) * [1 0 0 -i]
-        
-        # Construct Q manually
-        Q = jnp.array([
-            [1, 0, 0, 1j],
-            [0, 1j, 1, 0],
-            [0, 1j, -1, 0],
-            [1, 0, 0, -1j]
-        ], dtype=jnp.complex64) * inv_sqrt2
-        
-        # Transform to magic basis
-        m = jnp.conj(Q).T @ unitary @ Q
-        
-        # Remove global phase to make determinant 1
-        # In SU(4), det is 1.
-        
-        # Compute m_transposed * m
-        # This is related to the gamma matrix in KAK
-        gamma = m.T @ m
-        
-        # Eigenvalues of gamma
-        # They come in pairs: exp(2i(x+y)), exp(-2i(x+y)), ...
-        # But simpler: The interaction coefficients relate to the spectrum of this matrix.
-        eigvals = jnp.linalg.eigvals(gamma)
-        
-        # Extract angles
-        # eigenvalues are exp(i * phase)
-        # phases are related to 2*x, 2*y, 2*z combinations
-        angles = -jnp.angle(eigvals) / 2.0
-        
-        # Sort and extract x, y, z
-        # This part is heuristic for now to match Cirq's canonical region,
-        # but for performance proof, calculating eigvals is the heavy part.
-        return angles
-        
     # Convert numpy to jax array
     u_jax = jnp.array(u)
-    return _compute_kak_coords(u_jax)
+    return kak_utils.compute_kak_coords(u_jax)
 
 def worker_decompose_batch_jax(batch_tuple):
     """
@@ -171,25 +113,10 @@ def worker_decompose_batch_jax(batch_tuple):
                 pass
                 
     # 2. Vectorized JAX Computation (vmap)
-    # Define vmapped function inside worker to ensure it uses local JAX
-    @jax.jit
-    def _compute_kak_coords_single(unitary):
-        # ... (Same KAK logic as before) ...
-        inv_sqrt2 = 1.0 / jnp.sqrt(2.0)
-        Q = jnp.array([
-            [1, 0, 0, 1j],
-            [0, 1j, 1, 0],
-            [0, 1j, -1, 0],
-            [1, 0, 0, -1j]
-        ], dtype=jnp.complex64) * inv_sqrt2
-        m = jnp.conj(Q).T @ unitary @ Q
-        gamma = m.T @ m
-        eigvals = jnp.linalg.eigvals(gamma)
-        angles = -jnp.angle(eigvals) / 2.0
-        return angles
-
+    import kak_utils
+    
     # Vectorize it!
-    _compute_kak_coords_batch = jax.vmap(_compute_kak_coords_single)
+    _compute_kak_coords_batch = jax.vmap(kak_utils.compute_kak_coords)
     
     if unitaries:
         u_stack = jnp.array(np.stack(unitaries))
@@ -237,42 +164,14 @@ def worker_pure_jax_pipeline(batch_data):
     import jax
     import jax.numpy as jnp
     import numpy as np
+    import kak_utils
     
     indices, unitaries = batch_data
     
     # JAX Logic
     @jax.jit
     def _synthesize_batch(u_batch):
-        # 1. Compute KAK
-        # ... (Same as before) ...
-        inv_sqrt2 = 1.0 / jnp.sqrt(2.0)
-        Q = jnp.array([
-            [1, 0, 0, 1j],
-            [0, 1j, 1, 0],
-            [0, 1j, -1, 0],
-            [1, 0, 0, -1j]
-        ], dtype=jnp.complex64) * inv_sqrt2
-        
-        # Define CNOT Constants (The "Solution" for the CNOT region)
-        # Shape: (4, 2, 3) -> Layers=4 (K1, K2, K3, K4-pad), Qubits=2, Params=3(x,z,a)
-        # Derived from offline analysis of SycamoreTargetGateset
-        # Layer 0:
-        # Q0: x=-0.586, z=0.583, a=0.5
-        # Q1: x=0.5, z=0.416, a=0.5
-        # Layer 1:
-        # Q0: 0,0,0
-        # Q1: x=0.477, z=0, a=0
-        # Layer 2:
-        # Q0: x=0.586, z=0.083, a=-0.083
-        # Q1: x=0.5, z=-0.75, a=0.25
-        # Layer 3: Zeros
-        
-        cnot_params = jnp.array([
-            [[-0.5863459345743176, 0.5833333333333335, 0.4999999999999998], [0.5, 0.41666666666666696, 0.5]],
-            [[0.0, 0.0, 0.0], [0.4771266984986657, 0.0, 0.0]],
-            [[0.5863459345743176, 0.08333333333333304, -0.08333333333333348], [0.5, -0.7499999999999996, 0.24999999999999944]],
-            [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
-        ])
+        # 1. KAK Setup Removed (Handled by kak_utils inside _process_one)
         
         # Variational Solver Constants
         # We need a function that maps params to unitary
@@ -336,10 +235,15 @@ def worker_pure_jax_pipeline(batch_data):
             u2_1 = _phased_xz(p[2,1,0], p[2,1,1], p[2,1,2])
             u2 = jnp.kron(u2_0, u2_1)
             
-            # Circuit: K1 -> SYC -> K2 -> SYC -> K3
-            # Matmul order: U_total = K3 @ SYC @ K2 @ SYC @ K1
+            # Layer 3 (K4)
+            u3_0 = _phased_xz(p[3,0,0], p[3,0,1], p[3,0,2])
+            u3_1 = _phased_xz(p[3,1,0], p[3,1,1], p[3,1,2])
+            u3 = jnp.kron(u3_0, u3_1)
             
-            return u2 @ syc_mat @ u1 @ syc_mat @ u0
+            # Circuit: K1 -> SYC -> K2 -> SYC -> K3 -> SYC -> K4
+            # Matmul order: U_total = K4 @ SYC @ K3 @ SYC @ K2 @ SYC @ K1
+            
+            return u3 @ syc_mat @ u2 @ syc_mat @ u1 @ syc_mat @ u0
 
         def _loss_fn(p, target_u):
             predicted_u = _parametric_unitary(p)
@@ -352,7 +256,7 @@ def worker_pure_jax_pipeline(batch_data):
             # Adam Optimizer Implementation
             def _optimize_one(u_target, init_params):
                 lr = 0.05
-                steps = 0 # BYPASS OPTIMIZATION FOR SPEED PROOF (Throughput Test)
+                steps = 500 # ENABLED OPTIMIZATION
                 b1 = 0.9
                 b2 = 0.999
                 eps = 1e-8
@@ -397,25 +301,20 @@ def worker_pure_jax_pipeline(batch_data):
                 return _optimize_one(u, seed)
             
             # 1. Define Seeds
-            # Use CNOT params as one seed
-            # seed_cnot = jnp.expand_dims(cnot_params, 0) # (1, 4, 2, 3)
+            # Use KAK Initialization (Smart Seed)
+            kak_coords = kak_utils.compute_kak_coords(u)
+            kak_seed = kak_utils.get_sycamore_initial_params(kak_coords)
+            seed_kak = jnp.expand_dims(kak_seed, 0) # (1, 4, 2, 3)
             
             # Use Random seeds for exploration
-            # For SPEED BENCHMARK: Use only 1 random seed
-            n_random = 1 
+            n_random = 3 
             
-            # We need a random key. In JIT, we should pass it or use a constant one if we don't care about perfect randomness across batches.
-            # Ideally we pass key to _process_one, but vmap makes it hard.
-            # Using a pseudo-random seed based on u might be clever?
-            # Or just use a fixed key (deterministic randomness).
             rng_key = jax.random.PRNGKey(42)
             # Create (n_random, 4, 2, 3)
             random_seeds = jax.random.normal(rng_key, (n_random, 4, 2, 3)) * jnp.pi
             
-            # Combine seeds
-            # all_seeds = jnp.concatenate([seed_cnot, random_seeds], axis=0)
-            # Just use random seeds for now to be fast and simple
-            all_seeds = random_seeds
+            # Combine seeds: Prioritize KAK seed
+            all_seeds = jnp.concatenate([seed_kak, random_seeds], axis=0)
             
             # 2. Parallel Optimization (Multi-Start)
             # vmap over seeds
@@ -688,6 +587,13 @@ def parallel_sycamore_compilation(circuit, executor=None):
                     # Layer 2 (K3)
                     ops.append(cirq.PhasedXZGate(x_exponent=p[2,0,0], z_exponent=p[2,0,1], axis_phase_exponent=p[2,0,2])(q0))
                     ops.append(cirq.PhasedXZGate(x_exponent=p[2,1,0], z_exponent=p[2,1,1], axis_phase_exponent=p[2,1,2])(q1))
+
+                    # SYC 3
+                    ops.append(cirq_google.SYC(q0, q1))
+                    
+                    # Layer 3 (K4)
+                    ops.append(cirq.PhasedXZGate(x_exponent=p[3,0,0], z_exponent=p[3,0,1], axis_phase_exponent=p[3,0,2])(q0))
+                    ops.append(cirq.PhasedXZGate(x_exponent=p[3,1,0], z_exponent=p[3,1,1], axis_phase_exponent=p[3,1,2])(q1))
                     
                     compiled_ops_list[idx] = ops
                     
@@ -735,7 +641,7 @@ def main():
     print("\n## 1. Create a Random Deep Circuit (RANDOM UNITARY MODE for VQE TEST)")
     n_qubits = 8 # 8 Qubits
     qubits = cirq.LineQubit.range(n_qubits)
-    depth = 4000 # High depth to demonstrate massive speedup
+    depth = 50 # Reduced depth for fast verification
     
     start_time = time.time()
     print("Generating circuit with random unitary gates...")

@@ -3,3 +3,5 @@ cirq-google==1.6.1
 matplotlib
 numpy
 pandas
+jax
+jaxlib
